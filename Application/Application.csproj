@@ -1,0 +1,31 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Domain\Domain.csproj" />
+    <PackageReference Include="AutoMapper" Version="16.1.1" />
+	  <PackageReference Include="MediatR" Version="14.1.0" />
+	  <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Features\OrderItems\Handlers\Commands\" />
+    <Folder Include="Features\OrderItems\Handlers\Queries\" />
+    <Folder Include="Features\OrderItems\Requests\Commands\" />
+    <Folder Include="Features\OrderItems\Requests\Queries\" />
+    <Folder Include="Features\Orders\Handlers\Commands\" />
+    <Folder Include="Features\Orders\Handlers\Queries\" />
+    <Folder Include="Features\Orders\Requests\Commands\" />
+    <Folder Include="Features\Orders\Requests\Queries\" />
+    <Folder Include="Features\Products\Handlers\Commands\" />
+    <Folder Include="Features\Products\Handlers\Queries\" />
+    <Folder Include="Features\Products\Requests\Commands\" />
+    <Folder Include="Features\Products\Requests\Queries\" />
+  </ItemGroup>
+
+</Project>
