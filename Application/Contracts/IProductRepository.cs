@@ -2,7 +2,7 @@
 
 namespace Application.Contracts
 {
-    public interface ProductRepository:IGenericRepository<Product>
+    public interface IProductRepository:IGenericRepository<Product>
     {
         Task<IReadOnlyList<Product>> SearchByNameAsync(string name);
 

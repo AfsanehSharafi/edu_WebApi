@@ -17,14 +17,6 @@ namespace WebApi.Controllers
             _mediator = mediator;
         }
 
-        // POST: api/category
-        [HttpPost]
-        public async Task<ActionResult> Create([FromBody] CreateCategoryCommand command)
-        {
-            var result = await _mediator.Send(command);
-            return Ok(result);
-        }
-
 
         // GET: api/category
         [HttpGet]
@@ -38,8 +30,8 @@ namespace WebApi.Controllers
         [HttpGet("{id}")]
         public async Task<ActionResult> GetById(int id)
         {
-            var result= await _mediator.Send(new GetCategoryDetailRequest { Id = id});
-            if(result == null)
+            var result = await _mediator.Send(new GetCategoryDetailRequest { Id = id });
+            if (result == null)
             {
                 return NotFound();
             }
@@ -47,5 +39,42 @@ namespace WebApi.Controllers
         }
 
 
+        // POST: api/category
+        [HttpPost]
+        public async Task<ActionResult> Create([FromBody] CreateCategoryCommand command)
+        {
+            var result = await _mediator.Send(command);
+            return Ok(result);
+        }
+
+        // PUT: api/category
+        [HttpPut]
+        public async Task<ActionResult> Update([FromBody] UpdateCategoryCommand command)
+        {
+            var getResult = await _mediator.Send(new GetCategoryDetailRequest {  Id= command.Id });
+            if (getResult == null)
+            {
+                return NotFound($"Category with ID{command.Id} not Found.");
+            }
+
+            var result = await _mediator.Send(command);
+            return Ok();
+        }
+
+
+
+        [HttpDelete("{id}")]
+        public async Task<ActionResult> Delete(int id)
+        {
+            var categoryExist = await _mediator.Send(new GetCategoryDetailRequest { Id =id });
+            if(categoryExist == null)
+            {
+                return NotFound($"Category with ID {id} not Found");
+            }
+
+            var command = new DeleteCategoryCommand { Id = id };
+            await _mediator.Send(command);
+            return NoContent();
+        }
     }
 }

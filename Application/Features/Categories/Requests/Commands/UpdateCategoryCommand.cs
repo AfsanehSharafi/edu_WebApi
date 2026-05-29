@@ -1,6 +1,8 @@
-﻿namespace Application.Features.Categories.Requests.Commands
+﻿using MediatR;
+
+namespace Application.Features.Categories.Requests.Commands
 {
-    public class UpdateCategoryCommand
+    public class UpdateCategoryCommand:IRequest<Unit>
     {
         public int Id { get; set; }
         public string Name { get; set; }

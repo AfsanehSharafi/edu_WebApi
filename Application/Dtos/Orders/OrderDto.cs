@@ -1,7 +1,8 @@
 ﻿using Application.Dtos.Common;
+using Application.Dtos.OrderItems;
 using Domain.Entities;
 
-namespace Application.Dtos
+namespace Application.Dtos.Orders
 {
     public class OrderDto:BaseDto
     {

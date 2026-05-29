@@ -1,5 +1,5 @@
 ﻿using Application.Contracts;
-using Application.Dtos;
+using Application.Dtos.Categories;
 using Application.Features.Categories.Requests.Queries;
 using MediatR;
 

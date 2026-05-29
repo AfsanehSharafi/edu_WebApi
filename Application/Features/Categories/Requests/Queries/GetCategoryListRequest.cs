@@ -1,4 +1,4 @@
-﻿using Application.Dtos;
+﻿using Application.Dtos.Categories;
 using MediatR;
 
 namespace Application.Features.Categories.Requests.Queries
