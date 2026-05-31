@@ -35,7 +35,7 @@ namespace Persistence.Repositories
 
         public async Task<bool> ExistsByNameAsync(string name)
         {
-            return await _context.Categories.AnyAsync(q => q.Name.ToLower() == name.ToLower());
+            return await _context.Categories.AnyAsync(c=> c.Name == name);
         }
 
         public async Task<IReadOnlyList<Category>> GetAllAsync()
