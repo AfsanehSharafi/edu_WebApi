@@ -16,7 +16,7 @@ namespace Persistence.Repositories
 
         public async Task<Category> AddAsync(Category entity)
         {
-            await _context.Categories.AddAsync(entity);
+            await _context.AddAsync(entity);
             await _context.SaveChangesAsync();
             return entity;
         }

@@ -13,11 +13,12 @@ namespace Persistence.Repositories
             _context = context;
         }
 
-        public async Task<bool> ExistsInOrderAsync(int orderId, int productId)
+        public async Task<bool> ExistsInOrderItemAsync(int orderId, int productId)
         {
             return await _context.OrderItems
                 .AsNoTracking()
                 .AnyAsync(oi => oi.OrderId == orderId && oi.ProductId == productId);
+
         }
 
         public async Task<IReadOnlyList<OrderItems>> GetItemsByOrderIdAsync(int orderId)
