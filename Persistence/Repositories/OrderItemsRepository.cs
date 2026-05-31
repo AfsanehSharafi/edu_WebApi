@@ -22,12 +22,11 @@ namespace Persistence.Repositories
 
         public async Task<IReadOnlyList<OrderItems>> GetItemsByOrderIdAsync(int orderId)
         {
-            var orderItems = await _context.OrderItems
+            return await _context.OrderItems
                 .AsNoTracking()
-                .Where(oi => oi.OrderId == orderId)
+                .Where(oi=> oi.OrderId == orderId)
                 .Include(oi=> oi.Product)
                 .ToListAsync();
-            return orderItems;
         }
     }
 }
