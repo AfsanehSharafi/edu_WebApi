@@ -24,28 +24,28 @@ namespace Persistence.Repositories
         public async Task DeleteAsync(int id)
         {
             await _context.Categories
-                .Where(c=> c.Id == id)
+                .Where(c => c.Id == id)
                 .ExecuteDeleteAsync();
         }
 
         public async Task<bool> ExistsAsync(int id)
         {
-            return await _context.Categories.AnyAsync(c=> c.Id == id);
+            return await _context.Categories.AnyAsync(c => c.Id == id);
         }
 
         public async Task<bool> ExistsByNameAsync(string name)
         {
-            return await _context.Categories.AnyAsync(c=> c.Name == name);
+            return await _context.Categories.AnyAsync(c => c.Name == name);
         }
 
-        public async Task<IReadOnlyList<Category>> GetAllAsync(int page= 1 , int pageSize= 10)
+        public async Task<IReadOnlyList<Category>> GetAllAsync(int page = 1, int pageSize = 10)
         {
             return await _context.Categories
                 .OrderBy(c => c.Id)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
-                
+
 
         }
 
@@ -54,10 +54,12 @@ namespace Persistence.Repositories
             return await _context.Categories.FindAsync(id);
         }
 
-        public async Task UpdateAsync(Category entity)
+
+        public async Task UpdateAsync(int id, string name)
         {
-            _context.Entry(entity).State = EntityState.Modified;
-            await _context.SaveChangesAsync();
+            await _context.Categories
+                .OrderBy(c => c.Id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(c => c.Name, name));
         }
     }
 }
