@@ -38,9 +38,15 @@ namespace Persistence.Repositories
             return await _context.Categories.AnyAsync(c=> c.Name == name);
         }
 
-        public async Task<IReadOnlyList<Category>> GetAllAsync()
+        public async Task<IReadOnlyList<Category>> GetAllAsync(int page= 1 , int pageSize= 10)
         {
-            return await _context.Categories.ToListAsync();
+            return await _context.Categories
+                .OrderBy(c => c.Id)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+                
+
         }
 
         public async Task<Category?> GetByIdAsync(int id)
