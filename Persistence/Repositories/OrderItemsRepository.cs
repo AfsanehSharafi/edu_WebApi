@@ -17,7 +17,7 @@ namespace Persistence.Repositories
         {
             return await _context.OrderItems
                 .AsNoTracking()
-                .AnyAsync(oi => oi.OrderId == orderId & oi.ProductId == productId);
+                .AnyAsync(oi => oi.OrderId == orderId && oi.ProductId == productId);
         }
 
         public async Task<IReadOnlyList<OrderItems>> GetItemsByOrderIdAsync(int orderId)
