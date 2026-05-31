@@ -35,7 +35,7 @@ namespace Persistence.Repositories
 
         public async Task UpdateStatusAsync(int orderId, OrderStatus status)
         {
-            return await _context.Orders
+                await _context.Orders
                 .Where(o=> o.Id ==orderId)
                 .ExecuteUpdateAsync(setter=> setter.SetProperty(o=> o.Status, status));
         }
