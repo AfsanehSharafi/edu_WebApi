@@ -16,33 +16,28 @@ namespace Persistence.Repositories
 
         public async Task<IReadOnlyList<Order>> GetOrderByUserIdAsync(int userId)
         {
-            var orders = await _context.Orders
+            return await _context.Orders
                 .AsNoTracking()
                 .Where(o=> o.UserId == userId)
-                .Include(o=> o.OrderItems)
+                .OrderByDescending(o=> o.OrderDate)
                 .ToListAsync();
-            return orders;
         }
 
         public async Task<Order?> GetOrderWithDetailAsync(int orderId)
         {
-            var order = await _context.Orders
+            return await _context.Orders
                 .AsNoTracking()
                 .Include(o=> o.OrderItems)
                 .ThenInclude(oi=> oi.Product)
                 .Include(o=> o.User)
                 .FirstOrDefaultAsync(o=> o.Id == orderId);
-            return order;
         }
 
         public async Task UpdateStatusAsync(int orderId, OrderStatus status)
         {
-            var order = await _context.Orders.FindAsync(orderId);
-                if(order != null)
-            {
-                order.Status = status;
-                await _context.SaveChangesAsync();
-            }
+            return await _context.Orders
+                .Where(o=> o.Id ==orderId)
+                .ExecuteUpdateAsync(setter=> setter.SetProperty(o=> o.Status, status));
         }
     }
 }
