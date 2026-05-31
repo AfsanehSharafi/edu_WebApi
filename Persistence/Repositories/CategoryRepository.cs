@@ -30,7 +30,7 @@ namespace Persistence.Repositories
 
         public async Task<bool> ExistsAsync(int id)
         {
-            return await _context.Categories.AnyAsync(q => q.Id == id);
+            return await _context.Categories.AnyAsync(c=> c.Id == id);
         }
 
         public async Task<bool> ExistsByNameAsync(string name)
