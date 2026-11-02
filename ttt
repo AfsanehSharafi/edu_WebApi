@@ -1,0 +1,1855 @@
+
+======================================================
+FILE: Rooznabeh.Domain\Entities\City.cs
+======================================================
+using System.Collections.Generic;
+
+namespace Rooznabeh.Domain.Entities;
+
+public class City
+{
+    public int Id { get; private set; }
+    public string Name { get; private set; } = string.Empty;
+
+    // âœ… Ø§Ø±ØªØ¨Ø§Ø· Ø¨Ø§ Ù…Ø­Ù„Ù‡â€ŒÙ‡Ø§
+    public ICollection<Neighborhood> Neighborhoods { get; private set; } = new List<Neighborhood>();
+
+    private City() { }
+
+    public City(string name)
+    {
+        Name = name;
+    }
+}
+
+======================================================
+FILE: Rooznabeh.Domain\Entities\AdAgg\Ad.cs
+======================================================
+using Rooznabeh.Domain.Entities.CategoryAgg;
+using Rooznabeh.Domain.Enums;
+using Rooznabeh.Domain.Events;
+using Rooznabeh.Domain.Exceptions;
+using System.Text.RegularExpressions;
+
+namespace Rooznabeh.Domain.Entities.AdAggregate;
+
+public class Ad : IHasDomainEvents
+{
+    public Guid Id { get; private set; }
+    public string Title { get; private set; } = string.Empty;
+    public string Slug { get; private set; } = string.Empty;
+    public string Description { get; private set; } = string.Empty;
+    public decimal Price { get; private set; }
+    public int ViewCount { get; private set; }
+    public AdStatus Status { get; private set; }
+    public DateTime CreatedAt { get; private set; }
+    public DateTime? ExpiryDate { get; private set; }
+    public int CategoryId { get; private set; }
+    public int CityId { get; private set; }
+
+    // âœ… ÙÛŒÙ„Ø¯ Ù…Ø­Ù„Ù‡ Ø§Ø¶Ø§ÙÙ‡ Ø´Ø¯
+    public int? NeighborhoodId { get; private set; }
+
+    public Guid UserId { get; private set; }
+    public bool IsChatEnabled { get; private set; }
+    public bool IsDeletedByUser { get; private set; }
+
+    public bool IsNardeban { get; private set; }
+    public DateTime? NardebanActivatedAt { get; private set; }
+
+    public User User { get; internal set; } = null!;
+    public Category Category { get; internal set; } = null!;
+
+    // âœ… Ù†ÙˆÛŒÚ¯ÛŒØ´Ù† Ù¾Ø±Ø§Ù¾Ø±ØªÛŒ Ù…Ø­Ù„Ù‡ Ø§Ø¶Ø§ÙÙ‡ Ø´Ø¯
+    public Neighborhood? Neighborhood { get; internal set; }
+
+    private readonly List<AdImage> _images = new();
+    public IReadOnlyCollection<AdImage> Images => _images.AsReadOnly();
+
+    private readonly List<IDomainEvent> _domainEvents = new();
+    public IReadOnlyCollection<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+
+    public bool IsActive => Status == AdStatus.Active;
+    public bool IsExpire => Status == AdStatus.Expired;
+
+    private Ad() { }
+
+    // âœ… Ù¾Ø§Ø±Ø§Ù…ØªØ± Ù…Ø­Ù„Ù‡ Ø¨Ù‡ Ú©Ø§Ù†Ø³ØªØ±Ø§Ú©ØªÙˆØ± Ø§Ø¶Ø§ÙÙ‡ Ø´Ø¯
+    public Ad(string title, string description, decimal price, int categoryId, int cityId, Guid userId, bool isPaidCategory, bool isChatEnabled = true, int? neighborhoodId = null)
+    {
+        Id = Guid.NewGuid();
+        SetTitle(title);
+        SetDescription(description);
+        SetPrice(price);
+        CategoryId = categoryId;
+        CityId = cityId;
+        NeighborhoodId = neighborhoodId; // âœ… Ù…Ù‚Ø¯Ø§Ø±Ø¯Ù‡ÛŒ Ø´Ø¯
+        UserId = userId;
+        CreatedAt = DateTime.UtcNow;
+        ViewCount = 0;
+        IsChatEnabled = isChatEnabled;
+        IsDeletedByUser = false;
+        IsNardeban = false;
+        NardebanActivatedAt = null;
+
+        Slug = GenerateSlug(title) + "-" + Id.ToString("N").Substring(0, 6);
+
+        Status = isPaidCategory ? AdStatus.PendingPayment : AdStatus.PendingReview;
+        ExpiryDate = CreatedAt.AddDays(30);
+
+        _domainEvents.Add(new AdCreatedDomainEvent(this));
+    }
+
+    private static string GenerateSlug(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return "ad";
+        var slug = title.Trim().Replace(" ", "-");
+        var invalidChars = Regex.Escape("~!@#$%^&*()_|+\\=?;:'\",<.>/");
+        slug = Regex.Replace(slug, $"[{invalidChars}]", "");
+        return slug;
+    }
+
+    public void SetExpiryDate(int durationDays) => ExpiryDate = CreatedAt.AddDays(durationDays);
+
+    public void Renew(int additionalDays)
+    {
+        if (ExpiryDate.HasValue) ExpiryDate = ExpiryDate.Value.AddDays(additionalDays);
+        else ExpiryDate = DateTime.UtcNow.AddDays(additionalDays);
+
+        if (Status == AdStatus.Expired)
+            Status = AdStatus.Active;
+    }
+
+    public void CheckAndExpire()
+    {
+        if (ExpiryDate.HasValue && DateTime.UtcNow > ExpiryDate.Value && Status == AdStatus.Active)
+            ChangeStatus(AdStatus.Expired);
+    }
+
+    public void SetChatEnabled(bool enabled) => IsChatEnabled = enabled;
+    public void IncrementViewCount() => ViewCount++;
+
+    public void SetNardeban()
+    {
+        IsNardeban = true;
+        NardebanActivatedAt = DateTime.UtcNow;
+    }
+
+    public void UnsetNardeban()
+    {
+        IsNardeban = false;
+        NardebanActivatedAt = null;
+    }
+
+    public void Approve()
+    {
+        if (Status == AdStatus.PendingReview) ChangeStatus(AdStatus.Active);
+        else throw new DomainException("ØªÙ†Ù‡Ø§ Ø¢Ú¯Ù‡ÛŒâ€ŒÙ‡Ø§ÛŒ Ø¯Ø± Ø§Ù†ØªØ¸Ø§Ø± ØªØ£ÛŒÛŒØ¯ Ù…ÛŒâ€ŒØªÙˆØ§Ù†Ù†Ø¯ ØªØ£ÛŒÛŒØ¯ Ø´ÙˆÙ†Ø¯.");
+    }
+
+    public void Reject(string? reason = null)
+    {
+        if (Status == AdStatus.PendingReview || Status == AdStatus.PendingPayment)
+            ChangeStatus(AdStatus.Rejected, reason);
+        else throw new DomainException("Ø§Ù…Ú©Ø§Ù† Ø±Ø¯ Ø§ÛŒÙ† Ø¢Ú¯Ù‡ÛŒ ÙˆØ¬ÙˆØ¯ Ù†Ø¯Ø§Ø±Ø¯.");
+    }
+
+    public void AdminReject(string? reason = null) => ChangeStatus(AdStatus.Rejected, reason);
+    public void AdminSetStatus(AdStatus newStatus, string? reason = null) => ChangeStatus(newStatus, reason);
+
+    public void SetPendingReview()
+    {
+        if (Status == AdStatus.PendingPayment)
+            ChangeStatus(AdStatus.PendingReview);
+    }
+
+    public void SubmitForReview()
+    {
+        Status = AdStatus.PendingReview;
+    }
+
+    public void MarkAsPaid()
+    {
+        throw new DomainException("Ø¨Ø±Ø§ÛŒ ØªØºÛŒÛŒØ± ÙˆØ¶Ø¹ÛŒØª Ù¾Ø³ Ø§Ø² Ù¾Ø±Ø¯Ø§Ø®Øª Ø§Ø² SetPendingReview Ø§Ø³ØªÙØ§Ø¯Ù‡ Ú©Ù†ÛŒØ¯.");
+    }
+
+    public void Expire()
+    {
+        if (Status == AdStatus.Active) ChangeStatus(AdStatus.Expired);
+    }
+
+    public void DeleteByUser()
+    {
+        IsDeletedByUser = true;
+        if (Status != AdStatus.Expired) Expire();
+    }
+
+    public void Activate()
+    {
+        if (Status == AdStatus.PendingReview || Status == AdStatus.PendingPayment)
+            ChangeStatus(AdStatus.Active);
+        else if (Status == AdStatus.Expired)
+            ChangeStatus(AdStatus.Active);
+    }
+
+    public void Deactivate()
+    {
+        if (Status == AdStatus.Active) ChangeStatus(AdStatus.Expired);
+    }
+
+    private void ChangeStatus(AdStatus newStatus, string? reason = null)
+    {
+        var oldStatus = Status;
+        Status = newStatus;
+        _domainEvents.Add(new AdStatusChangedDomainEvent(Id, UserId, oldStatus.ToString(), newStatus.ToString(), reason, Title));
+    }
+
+    public void AddDomainEvent(IDomainEvent domainEvent) => _domainEvents.Add(domainEvent);
+
+    public void AddImage(string imageUrl)
+    {
+        if (_images.Count >= 10) throw new DomainException("Ø­Ø¯Ø§Ú©Ø«Ø± Û±Û° ØªØµÙˆÛŒØ± Ù…Ø¬Ø§Ø² Ø§Ø³Øª.");
+        _images.Add(new AdImage(imageUrl));
+    }
+
+    public void RemoveImage(string imageUrl)
+    {
+        var img = _images.FirstOrDefault(i => i.Url == imageUrl);
+        if (img is not null) _images.Remove(img);
+    }
+
+    public void SetTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title) || title.Length > 100) throw new DomainException("Ø¹Ù†ÙˆØ§Ù† Ù†Ø¨Ø§ÛŒØ¯ Ø®Ø§Ù„ÛŒ ÛŒØ§ Ø¨ÛŒØ´ØªØ± Ø§Ø² Û±Û°Û° Ú©Ø§Ø±Ø§Ú©ØªØ± Ø¨Ø§Ø´Ø¯.");
+        Title = title;
+    }
+
+    public void SetDescription(string description)
+    {
+        if (string.IsNullOrWhiteSpace(description) || description.Length < 10) throw new DomainException("ØªÙˆØ¶ÛŒØ­Ø§Øª Ø¨Ø§ÛŒØ¯ Ø­Ø¯Ø§Ù‚Ù„ Û±Û° Ú©Ø§Ø±Ø§Ú©ØªØ± Ø¨Ø§Ø´Ø¯.");
+        Description = description;
+    }
+
+    public void SetPrice(decimal price)
+    {
+        if (price < 0) throw new DomainException("Ù‚ÛŒÙ…Øª Ù†Ù…ÛŒâ€ŒØªÙˆØ§Ù†Ø¯ Ù…Ù†ÙÛŒ Ø¨Ø§Ø´Ø¯.");
+        Price = price;
+    }
+
+    public void ClearDomainEvents() => _domainEvents.Clear();
+}
+
+======================================================
+FILE: Rooznabeh.Infrastructure\Persistence\Contexts\DataBaseContext.cs
+======================================================
+using Microsoft.EntityFrameworkCore;
+using Rooznabeh.Domain.Entities;
+using Rooznabeh.Domain.Entities.AdAggregate;
+using Rooznabeh.Domain.Entities.BillingAgg;
+using Rooznabeh.Domain.Entities.CategoryAgg;
+using Rooznabeh.Domain.Entities.MessagingAgg;
+using Rooznabeh.Domain.Entities.ReportAgg;
+using Rooznabeh.Domain.Entities.WalletAgg;
+
+namespace Rooznabeh.Infrastructure.Persistence;
+
+public class DataBaseContext : DbContext
+{
+    public DataBaseContext(DbContextOptions<DataBaseContext> options) : base(options) { }
+
+    public DbSet<User> Users => Set<User>();
+    public DbSet<City> Cities => Set<City>();
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Ad> Ads => Set<Ad>();
+    public DbSet<AdField> AdFields => Set<AdField>();
+    public DbSet<Mark> Marks => Set<Mark>();
+    public DbSet<Visit> Visits => Set<Visit>();
+    public DbSet<Tarefe> Tarefes => Set<Tarefe>();
+    public DbSet<Factor> Factors => Set<Factor>();
+    public DbSet<Field> Fields => Set<Field>();
+    public DbSet<FieldOption> FieldOptions => Set<FieldOption>();
+    public DbSet<CategoryField> CategoryFields => Set<CategoryField>();
+    public DbSet<Report> Reports => Set<Report>();
+    public DbSet<Conversation> Conversations => Set<Conversation>();
+    public DbSet<Message> Messages => Set<Message>();
+    public DbSet<Wallet> Wallets => Set<Wallet>();
+    public DbSet<WalletTransaction> WalletTransactions => Set<WalletTransaction>();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        optionsBuilder.ConfigureWarnings(warnings =>
+            warnings.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<Ad>(entity =>
+        {
+            entity.OwnsMany(a => a.Images, img =>
+            {
+                img.WithOwner().HasForeignKey("AdId");
+                img.HasKey("AdId", "Url");
+            });
+            entity.HasOne(a => a.Category).WithMany().HasForeignKey(a => a.CategoryId);
+            entity.HasOne(a => a.User).WithMany().HasForeignKey(a => a.UserId);
+
+            entity.Property(a => a.IsNardeban).HasDefaultValue(false);
+            entity.Property(a => a.NardebanActivatedAt).IsRequired(false);
+            entity.HasIndex(a => new { a.CategoryId, a.CityId, a.IsNardeban, a.CreatedAt })
+                  .HasDatabaseName("idx_ads_nardeban_sort");
+        });
+
+        modelBuilder.Entity<Tarefe>(entity =>
+        {
+            entity.Property(t => t.Type).HasConversion<int>();
+        });
+
+        modelBuilder.Entity<CategoryField>(entity =>
+        {
+            entity.ToTable("CategoryFields");
+            entity.HasKey(cf => cf.Id);
+            entity.HasOne(cf => cf.Category).WithMany().HasForeignKey(cf => cf.CategoryId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(cf => cf.Field).WithMany().HasForeignKey(cf => cf.FieldId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<FieldOption>(entity =>
+        {
+            entity.HasKey(o => o.Id);
+            entity.HasOne(o => o.Field).WithMany(f => f.Options).HasForeignKey(o => o.FieldId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Factor>(entity =>
+        {
+            entity.HasOne(f => f.Ad).WithMany().HasForeignKey(f => f.AdId);
+        });
+
+        modelBuilder.Entity<Report>(entity =>
+        {
+            entity.HasOne<Ad>().WithMany().HasForeignKey(r => r.AdId);
+            entity.HasOne<User>().WithMany().HasForeignKey(r => r.ReporterUserId);
+        });
+
+        modelBuilder.Entity<Conversation>(entity =>
+        {
+            entity.HasOne<Ad>().WithMany().HasForeignKey(c => c.AdId).IsRequired(false);
+            entity.HasOne<User>().WithMany().HasForeignKey(c => c.User1Id).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<User>().WithMany().HasForeignKey(c => c.User2Id).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<Message>(entity =>
+        {
+            entity.HasOne(m => m.Conversation).WithMany(c => c.Messages).HasForeignKey(m => m.ConversationId);
+            entity.HasOne<User>().WithMany().HasForeignKey(m => m.SenderId);
+        });
+
+        modelBuilder.Entity<User>(entity =>
+        {
+            entity.OwnsOne(u => u.Mobile, mobile =>
+            {
+                mobile.Property(m => m.Number).HasColumnName("Mobile");
+            });
+        });
+
+        modelBuilder.Entity<Mark>(entity =>
+        {
+            entity.HasOne(m => m.Ad).WithMany().HasForeignKey(m => m.AdId);
+        });
+
+        modelBuilder.Entity<Visit>(entity =>
+        {
+            entity.HasOne(v => v.Ad).WithMany().HasForeignKey(v => v.AdId);
+        });
+
+        modelBuilder.Entity<Wallet>(entity =>
+        {
+            entity.HasKey(w => w.Id);
+            entity.HasIndex(w => w.UserId).IsUnique();
+            entity.HasMany(w => w.Transactions)
+                  .WithOne()
+                  .HasForeignKey(t => t.WalletId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WalletTransaction>(entity =>
+        {
+            entity.HasKey(t => t.Id);
+            entity.Property(t => t.Amount).HasColumnType("decimal(18,2)");
+        });
+    }
+}
+======================================================
+FILE: Rooznabeh.Application\Ads\Commands\CreateAd\CreateAdCommand.cs
+======================================================
+using MediatR;
+
+namespace Rooznabeh.Application.Ads.Commands.CreateAd;
+
+public record CreateAdCommand(
+    string Title,
+    string Description,
+    decimal Price,
+    int CategoryId,
+    int CityId,
+    Guid UserId,
+    int? TarefeId = null,
+    bool IsChatEnabled = true,
+    List<AdFieldInput>? Fields = null,
+    bool UseWallet = false        // <-- جدید
+) : IRequest<CreateAdResponse>;
+
+public record AdFieldInput(int FieldId, string FieldValue);
+
+public record CreateAdResponse(
+    Guid AdId,
+    bool IsPaidCategory,
+    Guid? FactorId = null,
+    string? Status = null,
+    string? PaymentMethod = null
+);
+======================================================
+FILE: Rooznabeh.Application\Ads\Commands\CreateAd\CreateAdHandler.cs
+======================================================
+using MediatR;
+using Microsoft.Extensions.Logging;
+using Rooznabeh.Application.Common.Interfaces;
+using Rooznabeh.Domain.Entities.AdAggregate;
+using Rooznabeh.Domain.Entities.BillingAgg;
+using Rooznabeh.Domain.Events;
+using Rooznabeh.Domain.Exceptions;
+using Rooznabeh.Domain.Interfaces;
+
+namespace Rooznabeh.Application.Ads.Commands.CreateAd;
+
+public class CreateAdHandler : IRequestHandler<CreateAdCommand, CreateAdResponse>
+{
+    private readonly IAdRepository _adRepository;
+    private readonly ICategoryRepository _categoryRepository;
+    private readonly IFactorRepository _factorRepository;
+    private readonly ITarefeRepository _tarefeRepository;
+    private readonly IContentModerationService _moderationService;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IFieldRepository _fieldRepository;
+    private readonly IWalletRepository _walletRepository;
+    private readonly IMediator _mediator;
+    private readonly ILogger<CreateAdHandler> _logger;
+
+    public CreateAdHandler(
+        IAdRepository adRepository,
+        ICategoryRepository categoryRepository,
+        IFactorRepository factorRepository,
+        ITarefeRepository tarefeRepository,
+        IContentModerationService moderationService,
+        IUnitOfWork unitOfWork,
+        IFieldRepository fieldRepository,
+        IWalletRepository walletRepository,
+        IMediator mediator,
+        ILogger<CreateAdHandler> logger)
+    {
+        _adRepository = adRepository;
+        _categoryRepository = categoryRepository;
+        _factorRepository = factorRepository;
+        _tarefeRepository = tarefeRepository;
+        _moderationService = moderationService;
+        _unitOfWork = unitOfWork;
+        _fieldRepository = fieldRepository;
+        _walletRepository = walletRepository;
+        _mediator = mediator;
+        _logger = logger;
+    }
+
+    public async Task<CreateAdResponse> Handle(CreateAdCommand request, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("ایجاد آگهی توسط کاربر {UserId} در دسته {CategoryId}", request.UserId, request.CategoryId);
+
+        await _unitOfWork.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            var category = await _categoryRepository.GetByIdAsync(request.CategoryId)
+                ?? throw new CategoryNotFoundException(request.CategoryId);
+
+            bool isPaid = category.IsPaid;
+
+            if (isPaid && request.TarefeId is null)
+                throw new PaymentRequiredException();
+
+            var ad = new Ad(request.Title, request.Description, request.Price,
+                request.CategoryId, request.CityId, request.UserId, isPaid, request.IsChatEnabled);
+
+            var moderationResult = await _moderationService.ModerateAsync(ad);
+            if (!moderationResult.IsApproved)
+            {
+                ad.Reject(moderationResult.RejectReason);
+                await _adRepository.AddAsync(ad);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                await _unitOfWork.CommitTransactionAsync(cancellationToken);
+
+                var rejectedEvent = ad.DomainEvents.OfType<AdStatusChangedDomainEvent>()
+                    .FirstOrDefault(e => e.NewStatus == "Rejected");
+                if (rejectedEvent is not null)
+                {
+                    ad.ClearDomainEvents();
+                    await _mediator.Publish(rejectedEvent, cancellationToken);
+                }
+
+                _logger.LogWarning("آگهی {AdId} به دلیل {Reason} رد شد.", ad.Id, moderationResult.RejectReason);
+                return new CreateAdResponse(ad.Id, isPaid, null, ad.Status.ToString(), null);
+            }
+
+            await _adRepository.AddAsync(ad);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            if (request.Fields is not null && request.Fields.Any())
+            {
+                foreach (var field in request.Fields)
+                {
+                    var adField = new AdField(ad.Id, field.FieldId, field.FieldValue);
+                    await _fieldRepository.AddAdvertFieldAsync(adField);
+                }
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+
+            Factor? factor = null;
+            string? paymentMethod = null;
+
+            if (isPaid)
+            {
+                var tarefe = await _tarefeRepository.GetByIdAsync(request.TarefeId!.Value)
+                    ?? throw new DomainException("تعرفه نامعتبر است.");
+
+                bool useWallet = request.UseWallet;
+
+                if (useWallet)
+                {
+                    // پرداخت با کیف پول
+                    var debitSuccess = await _walletRepository.DebitAsync(
+                        request.UserId,
+                        tarefe.Price,
+                        $"پرداخت آگهی {ad.Id} از کیف پول"
+                    );
+
+                    if (!debitSuccess)
+                        throw new DomainException("موجودی کیف پول کافی نیست.");
+
+                    factor = new Factor(ad.Id, tarefe);
+                    factor.MarkAsPaid("wallet");
+                    await _factorRepository.AddAsync(factor);
+
+                    ad.SetExpiryDate(tarefe.DurationDays);
+                    ad.SetPendingReview();
+                    await _adRepository.UpdateAsync(ad);
+
+                    paymentMethod = "Wallet";
+                    _logger.LogInformation("آگهی {AdId} با کیف پول پرداخت شد.", ad.Id);
+                }
+                else
+                {
+                    // پرداخت آنلاین
+                    factor = new Factor(ad.Id, tarefe);
+                    await _factorRepository.AddAsync(factor);
+
+                    ad.SetExpiryDate(tarefe.DurationDays);
+                    await _adRepository.UpdateAsync(ad);
+
+                    paymentMethod = "Gateway";
+                    _logger.LogInformation("فاکتور {FactorId} برای آگهی {AdId} ایجاد شد.", factor.Id, ad.Id);
+                }
+
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+
+            await _unitOfWork.CommitTransactionAsync(cancellationToken);
+
+            var createdEvent = ad.DomainEvents.OfType<AdCreatedDomainEvent>().FirstOrDefault();
+            if (createdEvent is not null)
+            {
+                ad.ClearDomainEvents();
+                await _mediator.Publish(createdEvent, cancellationToken);
+            }
+
+            _logger.LogInformation("آگهی {AdId} با موفقیت ثبت شد.", ad.Id);
+            return new CreateAdResponse(ad.Id, isPaid, factor?.Id, ad.Status.ToString(), paymentMethod);
+        }
+        catch
+        {
+            await _unitOfWork.RollbackTransactionAsync(cancellationToken);
+            throw;
+        }
+    }
+}
+======================================================
+FILE: Rooznabeh.Application\Ads\Queries\GetAdById\GetAdByIdResponse.cs
+======================================================
+using System;
+using System.Collections.Generic;
+using Rooznabeh.Application.Fields.Queries.GetAdvertFields;
+
+namespace Rooznabeh.Application.Ads.Queries.GetAdById;
+
+public class GetAdByIdResponse
+{
+    public Guid Id { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string Slug { get; set; } = string.Empty;
+    public decimal Price { get; set; }
+    public string Description { get; set; } = string.Empty;
+    public string CityName { get; set; } = string.Empty;
+    public string CategoryName { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public int ViewCount { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public bool IsChatEnabled { get; set; }
+    public bool IsMarkedByCurrentUser { get; set; }
+    public List<string> Images { get; set; } = new();
+    public List<AdvertFieldDto> AdvertFields { get; set; } = new();
+    public string OwnerMobile { get; set; } = string.Empty;
+}
+
+======================================================
+FILE: Rooznabeh.Application\Ads\Queries\GetAdById\GetAdByIdHandler.cs
+======================================================
+using MediatR;
+using Rooznabeh.Application.Fields.Queries.GetAdvertFields;
+using Rooznabeh.Domain.Enums;
+using Rooznabeh.Domain.Interfaces;
+using System.Linq;
+
+namespace Rooznabeh.Application.Ads.Queries.GetAdById;
+
+public class GetAdByIdHandler : IRequestHandler<GetAdByIdQuery, GetAdByIdResponse>
+{
+    private readonly IAdRepository _adRepo;
+    private readonly IUserRepository _userRepo;
+    private readonly IFieldRepository _fieldRepo;
+    private readonly ICategoryRepository _categoryRepo;
+    private readonly ICityRepository _cityRepo;
+
+    public GetAdByIdHandler(
+        IAdRepository adRepo,
+        IUserRepository userRepo,
+        IFieldRepository fieldRepo,
+        ICategoryRepository categoryRepo,
+        ICityRepository cityRepo)
+    {
+        _adRepo = adRepo;
+        _userRepo = userRepo;
+        _fieldRepo = fieldRepo;
+        _categoryRepo = categoryRepo;
+        _cityRepo = cityRepo;
+    }
+
+    public async Task<GetAdByIdResponse> Handle(GetAdByIdQuery request, CancellationToken cancellationToken)
+    {
+        var ad = await _adRepo.GetByIdAsync(request.Id);
+        if (ad is null) return null!;
+
+        // âœ… Ø¢Ú¯Ù‡ÛŒ ÙÙ‚Ø· Ø¯Ø± Ø§ÛŒÙ† Ø¯Ùˆ Ø­Ø§Ù„Øª Ù‚Ø§Ø¨Ù„ Ù…Ø´Ø§Ù‡Ø¯Ù‡ Ø§Ø³Øª:
+        //   Û±. Ù…Ù†ØªØ´Ø± Ø´Ø¯Ù‡ (Active) Ø¨Ø§Ø´Ø¯ â†’ Ù‡Ù…Ù‡ Ù…ÛŒâ€ŒØªÙˆØ§Ù†Ù†Ø¯ Ø¨Ø¨ÛŒÙ†Ù†Ø¯
+        //   Û². Ú©Ø§Ø±Ø¨Ø± ÙØ¹Ù„ÛŒ ØµØ§Ø­Ø¨ Ø¢Ú¯Ù‡ÛŒ Ø¨Ø§Ø´Ø¯ â†’ Ø¯Ø± Ù‡Ø± ÙˆØ¶Ø¹ÛŒØªÛŒ
+        var isOwner = request.UserId.HasValue && request.UserId.Value == ad.UserId;
+        if (ad.Status != AdStatus.Active && !isOwner) return null!;
+
+        var user = await _userRepo.FindByIdAsync(ad.UserId);
+        var adFields = await _fieldRepo.GetAdvertFieldsAsync(ad.Id);
+        var category = await _categoryRepo.GetByIdAsync(ad.CategoryId);
+        var city = await _cityRepo.GetByIdAsync(ad.CityId);
+
+        var fieldDtos = new List<AdvertFieldDto>();
+        foreach (var af in adFields)
+        {
+            var field = await _fieldRepo.GetByIdAsync(af.FieldId);
+            fieldDtos.Add(new AdvertFieldDto
+            {
+                Id = af.Id,
+                FieldId = af.FieldId,
+                FieldName = field?.Name ?? "",
+                FieldValue = af.FieldValue
+            });
+        }
+
+        return new GetAdByIdResponse
+        {
+            Id = ad.Id,
+            Title = ad.Title,
+            Slug = ad.Slug, // âœ… Ø§ÛŒÙ† Ø®Ø· Ø§Ø¶Ø§ÙÙ‡ Ø´Ø¯
+            Price = ad.Price,
+            Description = ad.Description,
+            CityName = city?.Name ?? "",
+            CategoryName = category?.Name ?? "",
+            CreatedAt = ad.CreatedAt,
+            ViewCount = ad.ViewCount,
+            Status = ad.Status.ToString(),
+            IsChatEnabled = ad.IsChatEnabled,
+            IsMarkedByCurrentUser = false,
+            Images = ad.Images.Select(i => i.Url).ToList(),
+            AdvertFields = fieldDtos,
+            OwnerMobile = user?.Mobile.Number ?? ""
+        };
+    }
+}
+
+======================================================
+FILE: Rooznabeh.Api\Extensions\EndpointsExtensions.cs
+======================================================
+using MediatR;
+using Microsoft.AspNetCore.Mvc;
+using Rooznabeh.Application.Admin.Tarefe.Queries.GetTarefeList;
+using Rooznabeh.Application.Ads.Commands.AddImageToAd;
+using Rooznabeh.Application.Ads.Commands.CreateAd;
+using Rooznabeh.Application.Ads.Commands.DeleteAd;
+using Rooznabeh.Application.Ads.Commands.MarkAd;
+using Rooznabeh.Application.Ads.Commands.RemoveImageFromAd;
+using Rooznabeh.Application.Ads.Commands.UnmarkAd;
+using Rooznabeh.Application.Ads.Commands.UpdateAd;
+using Rooznabeh.Application.Ads.Queries.GetAdById;
+using Rooznabeh.Application.Ads.Queries.GetAdsList;
+using Rooznabeh.Application.Ads.Queries.GetUserAds;
+using Rooznabeh.Application.Ads.Queries.GetUserMarks;
+using Rooznabeh.Application.Ads.Queries.GetUserVisits;
+using Rooznabeh.Application.Categories.Queries.GetCategoriesTree;
+using Rooznabeh.Application.Cities.Queries.GetCities;
+using Rooznabeh.Application.Fields.Commands.AddAdvertField;
+using Rooznabeh.Application.Fields.Commands.RemoveAdvertField;
+using Rooznabeh.Application.Fields.Commands.UpdateAdvertField;
+using Rooznabeh.Application.Fields.Queries.GetAdvertFields;
+using Rooznabeh.Application.Fields.Queries.GetFieldsByCategory;
+using Rooznabeh.Application.Payments.Queries.GetUserFactors;
+using Rooznabeh.Application.Users.Commands.RegisterUser;
+using Rooznabeh.Application.Users.Commands.VerifyCode;
+using Rooznabeh.Domain.Interfaces;
+using System.Security.Claims;
+
+namespace Rooznabeh.Api.Extensions;
+
+public static class EndpointsExtensions
+{
+    public static IEndpointRouteBuilder MapRooznabehEndpoints(this IEndpointRouteBuilder app)
+    {
+        // ... (Auth routes remain unchanged) ...
+        app.MapPost("/auth/register", async (IMediator mediator, [FromBody] RegisterUserCommand command) =>
+        {
+            var result = await mediator.Send(command);
+            return Results.Ok(result);
+        }).RequireRateLimiting("auth").AllowAnonymous();
+
+        app.MapPost("/auth/verify", async (IMediator mediator, [FromBody] VerifyCodeCommand command) =>
+        {
+            var result = await mediator.Send(command);
+            if (result.Token is null)
+                return Results.BadRequest(new { Error = "Ú©Ø¯ ØªØ£ÛŒÛŒØ¯ Ù†Ø§Ø¯Ø±Ø³Øª Ø§Ø³Øª." });
+            return Results.Ok(result);
+        }).RequireRateLimiting("auth").AllowAnonymous();
+
+        // ... (Ad creation/update routes remain unchanged) ...
+        app.MapPost("/ads", async (
+            IMediator mediator,
+            [FromBody] CreateAdCommand command,
+            ClaimsPrincipal user,
+            IUserRepository userRepo) =>
+        {
+            var userIdClaim = user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId))
+                return Results.Unauthorized();
+
+            var existingUser = await userRepo.FindByIdAsync(userId);
+            if (existingUser is null)
+                return Results.BadRequest(new { Error = "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯. Ù„Ø·ÙØ§Ù‹ Ø¯ÙˆØ¨Ø§Ø±Ù‡ ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯." });
+
+            var fullCommand = command with { UserId = userId };
+            var result = await mediator.Send(fullCommand);
+            return Results.Ok(result);
+        }).RequireRateLimiting("create-ad").RequireAuthorization("ActiveUser");
+
+        app.MapPut("/ads/{id:guid}", async (Guid id, IMediator mediator, [FromBody] UpdateAdCommand command) =>
+        {
+            if (id != command.AdId) return Results.BadRequest(new { Error = "Ø´Ù†Ø§Ø³Ù‡ Ø¢Ú¯Ù‡ÛŒ Ù…Ø·Ø§Ø¨Ù‚Øª Ù†Ø¯Ø§Ø±Ø¯." });
+            await mediator.Send(command);
+            return Results.NoContent();
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapDelete("/ads/{id:guid}", async (Guid id, IMediator mediator, ClaimsPrincipal user) =>
+        {
+            var userId = Guid.Parse(user.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+            await mediator.Send(new DeleteAdCommand(id, userId));
+            return Results.NoContent();
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        // ... (Image routes remain unchanged) ...
+        app.MapPost("/ads/{adId:guid}/images", async (Guid adId, IMediator mediator, [FromBody] AddImageToAdCommand command) =>
+        {
+            if (adId != command.AdId) return Results.BadRequest(new { Error = "Ø´Ù†Ø§Ø³Ù‡ Ø¢Ú¯Ù‡ÛŒ Ù…Ø·Ø§Ø¨Ù‚Øª Ù†Ø¯Ø§Ø±Ø¯." });
+            await mediator.Send(command);
+            return Results.Ok();
+        }).RequireRateLimiting("upload").RequireAuthorization("ActiveUser");
+
+        app.MapDelete("/ads/{adId:guid}/images", async (Guid adId, IMediator mediator, [FromBody] RemoveImageFromAdCommand command) =>
+        {
+            if (adId != command.AdId) return Results.BadRequest(new { Error = "Ø´Ù†Ø§Ø³Ù‡ Ø¢Ú¯Ù‡ÛŒ Ù…Ø·Ø§Ø¨Ù‚Øª Ù†Ø¯Ø§Ø±Ø¯." });
+            await mediator.Send(command);
+            return Results.NoContent();
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        // ============================================================
+        // ðŸŒ Public - Ø®ÙˆØ§Ù†Ø¯Ù†ÛŒ (default = Û³Û°Û° Ø¯Ø± Ø¯Ù‚ÛŒÙ‚Ù‡)
+        // ============================================================
+
+        // âœ… Ø±ÙˆØª Ù‚Ø¨Ù„ÛŒ Ø¨Ø§ GUID (Ø¯Ø³Øªâ€ŒÙ†Ø®ÙˆØ±Ø¯Ù‡ Ø¨Ø±Ø§ÛŒ APIÙ‡Ø§)
+        app.MapGet("/ads/{id:guid}", async (Guid id, IMediator mediator, [FromQuery] Guid? userId) =>
+        {
+            var result = await mediator.Send(new GetAdByIdQuery(id, userId));
+            return result is null ? Results.NotFound(new { Error = "Ø¢Ú¯Ù‡ÛŒ ÛŒØ§ÙØª Ù†Ø´Ø¯." }) : Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        // âœ… Ø±ÙˆØª Ø¬Ø¯ÛŒØ¯ Ø¨Ø± Ø§Ø³Ø§Ø³ Slug (Ø¨Ø±Ø§ÛŒ ÙØ±Ø§Ù†Øªâ€ŒØ§Ù†Ø¯ Ùˆ Ø³Ø¦Ùˆ)
+        app.MapGet("/ads/slug/{slug}", async (string slug, IMediator mediator, [FromQuery] Guid? userId) =>
+        {
+            var result = await mediator.Send(new GetAdBySlugQuery(slug, userId));
+            return result is null ? Results.NotFound(new { Error = "Ø¢Ú¯Ù‡ÛŒ ÛŒØ§ÙØª Ù†Ø´Ø¯." }) : Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        // ... (Other public routes remain unchanged) ...
+        app.MapGet("/ads", async (IMediator mediator, int? cityId, int? categoryId, string? searchTerm, int page = 1, int pageSize = 10) =>
+        {
+            var query = new GetAdsListQuery(cityId, categoryId, searchTerm, page, pageSize);
+            var result = await mediator.Send(query);
+            return Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        app.MapGet("/categories", async (IMediator mediator, string? searchTerm) =>
+        {
+            var result = await mediator.Send(new GetCategoriesTreeQuery(searchTerm));
+            return Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        app.MapGet("/cities", async (IMediator mediator, string? searchTerm) =>
+        {
+            var result = await mediator.Send(new GetCitiesQuery(searchTerm));
+            return Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        app.MapGet("/categories/{categoryId:int}/fields", async (int categoryId, IMediator mediator) =>
+        {
+            var result = await mediator.Send(new GetFieldsByCategoryQuery(categoryId));
+            return Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        app.MapGet("/ads/{adId:guid}/fields", async (Guid adId, IMediator mediator) =>
+        {
+            var result = await mediator.Send(new GetAdvertFieldsQuery(adId));
+            return Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        app.MapGet("/tarefes", async (IMediator mediator) =>
+        {
+            var result = await mediator.Send(new GetTarefeListQuery());
+            return Results.Ok(result);
+        }).RequireRateLimiting("default").AllowAnonymous();
+
+        // ... (User routes remain unchanged) ...
+        app.MapGet("/users/{userId:guid}/ads", async (Guid userId, IMediator mediator) =>
+        {
+            var result = await mediator.Send(new GetUserAdsQuery(userId));
+            return Results.Ok(result);
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapPost("/ads/{adId:guid}/mark", async (Guid adId, IMediator mediator, [FromBody] MarkAdCommand command) =>
+        {
+            await mediator.Send(command);
+            return Results.Ok();
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapDelete("/marks/{markId:int}", async (int markId, IMediator mediator) =>
+        {
+            await mediator.Send(new UnmarkAdCommand(markId));
+            return Results.NoContent();
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapGet("/users/{userId:guid}/marks", async (Guid userId, IMediator mediator) =>
+        {
+            var result = await mediator.Send(new GetUserMarksQuery(userId));
+            return Results.Ok(result);
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapGet("/users/{userId:guid}/visits", async (Guid userId, IMediator mediator) =>
+        {
+            var result = await mediator.Send(new GetUserVisitsQuery(userId));
+            return Results.Ok(result);
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapGet("/users/{userId:guid}/factors", async (Guid userId, IMediator mediator) =>
+        {
+            var result = await mediator.Send(new GetUserFactorsQuery(userId));
+            return Results.Ok(result);
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        // ... (Fields routes remain unchanged) ...
+        app.MapPost("/ads/{adId:guid}/fields", async (Guid adId, IMediator mediator, [FromBody] AddAdvertFieldCommand command) =>
+        {
+            if (adId != command.AdId) return Results.BadRequest(new { Error = "Ø´Ù†Ø§Ø³Ù‡ Ø¢Ú¯Ù‡ÛŒ Ù…Ø·Ø§Ø¨Ù‚Øª Ù†Ø¯Ø§Ø±Ø¯." });
+            var id = await mediator.Send(command);
+            return Results.Ok(id);
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapPut("/fields/{advertFieldId:int}", async (int advertFieldId, IMediator mediator, [FromBody] UpdateAdvertFieldCommand command) =>
+        {
+            if (advertFieldId != command.AdvertFieldId) return Results.BadRequest(new { Error = "Ø´Ù†Ø§Ø³Ù‡ ÙÛŒÙ„Ø¯ Ù…Ø·Ø§Ø¨Ù‚Øª Ù†Ø¯Ø§Ø±Ø¯." });
+            await mediator.Send(command);
+            return Results.NoContent();
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        app.MapDelete("/fields/{advertFieldId:int}", async (int advertFieldId, IMediator mediator) =>
+        {
+            await mediator.Send(new RemoveAdvertFieldCommand(advertFieldId));
+            return Results.NoContent();
+        }).RequireRateLimiting("sensitive").RequireAuthorization("ActiveUser");
+
+        return app;
+    }
+}
+
+======================================================
+FILE: rooznabeh-frontend\src\pages\CreateAd.jsx
+======================================================
+import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
+
+const flattenTree = (nodes) => {
+  let flat = [];
+  for (const node of nodes) {
+    flat.push({ id: node.id, name: node.name, parentId: node.parentId, isPaid: node.isPaid });
+    if (node.children && node.children.length > 0) {
+      flat = flat.concat(flattenTree(node.children));
+    }
+  }
+  return flat;
+};
+
+function CreateAd() {
+  const navigate = useNavigate()
+  const token = localStorage.getItem('token')
+
+  const [step, setStep] = useState(1)
+  const [allCategories, setAllCategories] = useState([])
+  const [cities, setCities] = useState([])
+  const [tarefes, setTarefes] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState(false)
+  const [paidFromWallet, setPaidFromWallet] = useState(false)
+  const [walletBalance, setWalletBalance] = useState(0)
+  const [useWallet, setUseWallet] = useState(false)
+
+  const [selectedCategory, setSelectedCategory] = useState(null)
+  const [selectedCity, setSelectedCity] = useState(null)
+  const [selectedTarefeId, setSelectedTarefeId] = useState(null)
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [price, setPrice] = useState('')
+  const [enableChat, setEnableChat] = useState(true)
+
+  const [images, setImages] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef(null)
+
+  const [titleError, setTitleError] = useState('')
+  const [descError, setDescError] = useState('')
+  const [priceError, setPriceError] = useState('')
+
+  const [categoryStack, setCategoryStack] = useState([])
+  const [currentCategories, setCurrentCategories] = useState([])
+
+  const [fields, setFields] = useState([])
+  const [fieldValues, setFieldValues] = useState({})
+
+  useEffect(() => {
+    fetch('http://localhost:5097/categories')
+      .then(res => res.json())
+      .then(data => {
+        const flat = flattenTree(data);
+        setAllCategories(flat);
+        const roots = flat.filter(c => c.parentId === null);
+        setCurrentCategories(roots);
+      })
+      .catch(() => {})
+
+    fetch('http://localhost:5097/cities')
+      .then(res => res.json())
+      .then(data => setCities(data))
+      .catch(() => {})
+
+    fetch('http://localhost:5097/tarefes')
+      .then(res => res.json())
+      .then(data => setTarefes(data || []))
+      .catch(() => {})
+
+    if (token) {
+      fetch('http://localhost:5097/wallet', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+        .then(res => res.ok ? res.json() : { balance: 0 })
+        .then(data => setWalletBalance(data.balance || 0))
+        .catch(() => setWalletBalance(0))
+    }
+  }, [token])
+
+  const toEnglishDigits = (str) => str.replace(/[Û°-Û¹]/g, d => 'Û°Û±Û²Û³Û´ÛµÛ¶Û·Û¸Û¹'.indexOf(d).toString());
+
+  const handlePriceChange = (e) => {
+    const filtered = e.target.value.replace(/[^0-9Û°-Û¹]/g, '')
+    setPrice(filtered)
+    if (priceError) setPriceError('')
+  }
+
+  // âœ… Ù…Ø­Ø¯ÙˆØ¯ÛŒØª Ø§Ø¹Ø¯Ø§Ø¯ Ùˆ Ø­Ø±ÙˆÙ Ø¨Ø±Ø¯Ø§Ø´ØªÙ‡ Ø´Ø¯
+  const validateTitle = (value) => {
+    const v = value.trim()
+    if (!v) { setTitleError('Ø¹Ù†ÙˆØ§Ù† Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª.'); return false }
+    if (v.length < 5) { setTitleError('Ø¹Ù†ÙˆØ§Ù† Ø¨Ø§ÛŒØ¯ Ø­Ø¯Ø§Ù‚Ù„ Ûµ Ú©Ø§Ø±Ø§Ú©ØªØ± Ø¨Ø§Ø´Ø¯.'); return false }
+    if (v.length > 100) { setTitleError('Ø­Ø¯Ø§Ú©Ø«Ø± Û±Û°Û° Ú©Ø§Ø±Ø§Ú©ØªØ±.'); return false }
+    setTitleError('')
+    return true
+  }
+
+  // âœ… Ù…Ø­Ø¯ÙˆØ¯ÛŒØª Ø§Ø¹Ø¯Ø§Ø¯ Ùˆ Ú©Ø§Ø±Ø§Ú©ØªØ±Ù‡Ø§ÛŒ Ø®Ø§Øµ Ø¨Ø±Ø¯Ø§Ø´ØªÙ‡ Ø´Ø¯
+  const validateDesc = (value) => {
+    const v = value.trim()
+    if (!v) { setDescError('ØªÙˆØ¶ÛŒØ­Ø§Øª Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª.'); return false }
+    if (v.length < 10) { setDescError('ØªÙˆØ¶ÛŒØ­Ø§Øª Ø¨Ø§ÛŒØ¯ Ø­Ø¯Ø§Ù‚Ù„ Û±Û° Ú©Ø§Ø±Ø§Ú©ØªØ± Ø¨Ø§Ø´Ø¯.'); return false }
+    setDescError('')
+    return true
+  }
+
+  const validatePrice = (value) => {
+    if (!value.trim()) { setPriceError('Ù‚ÛŒÙ…Øª Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª.'); return false }
+    const eng = toEnglishDigits(value)
+    if (isNaN(eng) || Number(eng) < 0) { setPriceError('Ù‚ÛŒÙ…Øª Ø¨Ø§ÛŒØ¯ ÛŒÚ© Ø¹Ø¯Ø¯ Ù…Ø«Ø¨Øª Ø¨Ø§Ø´Ø¯.'); return false }
+    setPriceError('')
+    return true
+  }
+
+  const isFormValid = () => {
+    return titleError === '' && descError === '' && priceError === '' &&
+      title.trim().length >= 5 && description.trim().length >= 10 &&
+      price.trim() && Number(toEnglishDigits(price)) >= 0
+  }
+
+  const fetchFieldsByCategory = async (categoryId) => {
+    try {
+      const res = await fetch(`http://localhost:5097/categories/${categoryId}/fields?_=${Date.now()}`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Cache-Control': 'no-cache' }
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setFields(data || [])
+        setFieldValues({})
+      } else {
+        setFields([])
+      }
+    } catch { setFields([]) }
+  }
+
+  const handleFileSelect = async (e) => {
+    const files = Array.from(e.target.files)
+    if (images.length + files.length > 10) {
+      alert('Ø­Ø¯Ø§Ú©Ø«Ø± Û±Û° ØªØµÙˆÛŒØ± Ù…Ø¬Ø§Ø² Ø§Ø³Øª.')
+      return
+    }
+    setUploading(true)
+    for (const file of files) {
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        const res = await fetch('http://localhost:5097/upload', { method: 'POST', body: formData })
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}))
+          throw new Error(errData.error || `Ø®Ø·Ø§ÛŒ ${res.status}`)
+        }
+        const data = await res.json()
+        setImages(prev => {
+          const updated = [...prev, { url: data.url, isMain: false }]
+          if (updated.length === 1) updated[0].isMain = true
+          return updated
+        })
+      } catch (err) {
+        alert(`Ø®Ø·Ø§ Ø¯Ø± Ø¢Ù¾Ù„ÙˆØ¯ ${file.name}: ${err.message}`)
+      }
+    }
+    setUploading(false)
+    e.target.value = ''
+  }
+
+  const handleImageClick = (index) => setImages(prev => prev.map((img, i) => ({ ...img, isMain: i === index })))
+  const removeImage = (e, index) => {
+    e.stopPropagation()
+    setImages(prev => {
+      const updated = prev.filter((_, i) => i !== index)
+      if (updated.length > 0 && !updated.some(img => img.isMain)) updated[0].isMain = true
+      return updated
+    })
+  }
+
+  const handleSubmit = async () => {
+    if (!token) { setError('Ù„Ø·ÙØ§Ù‹ ÙˆØ§Ø±Ø¯ Ø­Ø³Ø§Ø¨ Ø®ÙˆØ¯ Ø´ÙˆÛŒØ¯.'); return }
+    setLoading(true); setError('')
+    try {
+      const payload = {
+        title: title.trim(),
+        description: description.trim(),
+        price: Number(toEnglishDigits(price)),
+        categoryId: selectedCategory.id,
+        cityId: selectedCity.id,
+        isChatEnabled: enableChat,
+        tarefeId: selectedTarefeId,
+        useWallet: useWallet,
+        fields: fields.length > 0 ? fields.map(f => ({ fieldId: f.id, fieldValue: fieldValues[f.id] || '' })) : null
+      }
+      const adRes = await fetch('http://localhost:5097/ads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify(payload)
+      })
+      if (!adRes.ok) {
+        let msg = `Ø®Ø·Ø§ÛŒ Ø³Ø±ÙˆØ± (${adRes.status})`
+        try { const errData = await adRes.json(); msg = errData.Error || errData.error || errData.message || msg } catch {}
+        throw new Error(msg)
+      }
+      const adData = await adRes.json()
+      const adId = adData.adId
+      setPaidFromWallet(adData.paymentMethod === 'Wallet')
+
+      if (images.length > 0) {
+        const main = images.find(i => i.isMain)
+        const others = images.filter(i => !i.isMain)
+        for (const img of (main ? [main, ...others] : others)) {
+          await fetch(`http://localhost:5097/ads/${adId}/images`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ adId, imageUrl: img.url })
+          })
+        }
+      }
+      setSuccess(true)
+    } catch (err) { setError(err.message) }
+    finally { setLoading(false) }
+  }
+
+  if (success) return (
+    <div className="min-h-[calc(100vh-80px)] flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white/60 dark:bg-white/5 backdrop-blur-md rounded-2xl p-8 border shadow-lg text-center">
+        <div className="text-5xl mb-4">âœ…</div>
+        {selectedCategory?.isPaid && !paidFromWallet ? (
+          <>
+            <h2 className="text-2xl font-bold text-orange-600 dark:text-orange-400 mb-4">Ø¢Ú¯Ù‡ÛŒ Ø´Ù…Ø§ Ø«Ø¨Øª Ø´Ø¯</h2>
+            <p className="text-gray-600 dark:text-gray-300 mb-8">Ø¢Ú¯Ù‡ÛŒ Ø´Ù…Ø§ Ø¯Ø± Ø§Ù†ØªØ¸Ø§Ø± Ù¾Ø±Ø¯Ø§Ø®Øª Ø§Ø³Øª. Ù„Ø·ÙØ§Ù‹ Ø¨Ø±Ø§ÛŒ Ø§Ù†ØªØ´Ø§Ø± Ø¢Ú¯Ù‡ÛŒØŒ Ù¾Ø±Ø¯Ø§Ø®Øª Ø±Ø§ Ø§Ù†Ø¬Ø§Ù… Ø¯Ù‡ÛŒØ¯.</p>
+          </>
+        ) : selectedCategory?.isPaid && paidFromWallet ? (
+          <>
+            <h2 className="text-2xl font-bold text-green-600 dark:text-green-400 mb-4">Ù¾Ø±Ø¯Ø§Ø®Øª Ø§Ø² Ú©ÛŒÙ Ù¾ÙˆÙ„ Ø§Ù†Ø¬Ø§Ù… Ø´Ø¯</h2>
+            <p className="text-gray-600 dark:text-gray-300 mb-8">Ø¢Ú¯Ù‡ÛŒ Ø´Ù…Ø§ Ø¯Ø± Ø§Ù†ØªØ¸Ø§Ø± ØªØ£ÛŒÛŒØ¯ Ù…Ø¯ÛŒØ± Ø§Ø³Øª Ùˆ Ù¾Ø³ Ø§Ø² Ø¨Ø±Ø±Ø³ÛŒ Ù…Ù†ØªØ´Ø± Ø®ÙˆØ§Ù‡Ø¯ Ø´Ø¯.</p>
+          </>
+        ) : (
+          <>
+            <h2 className="text-2xl font-bold text-green-600 dark:text-green-400 mb-4">Ø¢Ú¯Ù‡ÛŒ Ø´Ù…Ø§ Ø¨Ø§ Ù…ÙˆÙÙ‚ÛŒØª Ø«Ø¨Øª Ø´Ø¯</h2>
+            <p className="text-gray-600 dark:text-gray-300 mb-8">Ø¢Ú¯Ù‡ÛŒ Ø´Ù…Ø§ Ø¯Ø± Ø§Ù†ØªØ¸Ø§Ø± ØªØ£ÛŒÛŒØ¯ Ø§Ø³Øª Ùˆ Ù¾Ø³ Ø§Ø² Ø¨Ø±Ø±Ø³ÛŒ Ù…Ù†ØªØ´Ø± Ø®ÙˆØ§Ù‡Ø¯ Ø´Ø¯.</p>
+          </>
+        )}
+        <div className="flex gap-3">
+          <button onClick={() => navigate('/')} className="flex-1 py-3 rounded-xl bg-purple-600 text-white">ØµÙØ­Ù‡ Ø§ØµÙ„ÛŒ</button>
+          <button onClick={() => navigate('/my-ads')} className="flex-1 py-3 rounded-xl border border-purple-300 text-purple-600">Ø¢Ú¯Ù‡ÛŒâ€ŒÙ‡Ø§ÛŒ Ù…Ù†</button>
+        </div>
+      </div>
+    </div>
+  )
+
+  const handleCategoryClick = async (cat) => {
+    const children = allCategories.filter(c => c.parentId === cat.id)
+    if (children.length > 0) {
+      setCategoryStack([...categoryStack, cat])
+      setCurrentCategories(children)
+    } else {
+      setSelectedCategory(cat)
+      if (cat.isPaid && tarefes.length > 0) {
+        setSelectedTarefeId(tarefes[0].id)
+      }
+      await fetchFieldsByCategory(cat.id)
+      setStep(2)
+    }
+  }
+
+  const goBackInCategories = () => {
+    if (categoryStack.length === 0) return
+    const newStack = [...categoryStack]
+    newStack.pop()
+    setCategoryStack(newStack)
+    setCurrentCategories(newStack.length === 0 ? allCategories.filter(c => c.parentId === null) : allCategories.filter(c => c.parentId === newStack[newStack.length-1].id))
+  }
+
+  const nextStep = () => setStep(prev => Math.min(prev + 1, 5))
+  const prevStep = () => setStep(prev => Math.max(prev - 1, 1))
+
+  const renderStep = () => {
+    switch (step) {
+      case 1: return (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold">Ø§Ù†ØªØ®Ø§Ø¨ Ø¯Ø³ØªÙ‡â€ŒØ¨Ù†Ø¯ÛŒ</h3>
+            {categoryStack.length > 0 && <button onClick={goBackInCategories} className="text-sm text-purple-600">â† Ø¨Ø§Ø²Ú¯Ø´Øª</button>}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {currentCategories.map(cat => (
+              <button key={cat.id} onClick={() => handleCategoryClick(cat)} className="p-4 rounded-xl border hover:bg-purple-50 transition">
+                {cat.name}
+                {cat.isPaid && <span className="text-xs text-purple-600 block">Ù¾ÙˆÙ„ÛŒ</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )
+      case 2: return (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold">Ø§Ù†ØªØ®Ø§Ø¨ Ø´Ù‡Ø±</h3>
+            <button onClick={() => setStep(1)} className="text-sm text-purple-600">â† Ø¨Ø§Ø²Ú¯Ø´Øª</button>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {cities.map(city => (
+              <button key={city.id} onClick={() => { setSelectedCity(city); setStep(3) }} className="p-4 rounded-xl border hover:bg-purple-50 transition">{city.name}</button>
+            ))}
+          </div>
+        </div>
+      )
+      case 3: return (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold">Ù…Ø´Ø®ØµØ§Øª Ø¢Ú¯Ù‡ÛŒ</h3>
+            <button onClick={() => setStep(2)} className="text-sm text-purple-600">â† Ø¨Ø§Ø²Ú¯Ø´Øª</button>
+          </div>
+          <div className="space-y-4">
+            <input type="text" placeholder="Ø¹Ù†ÙˆØ§Ù† (Ø­Ø¯Ø§Ù‚Ù„ Ûµ Ú©Ø§Ø±Ø§Ú©ØªØ±)" value={title} onChange={e => { setTitle(e.target.value); if(titleError) setTitleError('') }} onBlur={e => validateTitle(e.target.value)} className={`w-full px-4 py-3 rounded-xl border ${titleError ? 'border-red-500' : ''}`} />
+            {titleError && <p className="text-red-500 text-xs">{titleError}</p>}
+            <textarea placeholder="ØªÙˆØ¶ÛŒØ­Ø§Øª (Ø­Ø¯Ø§Ù‚Ù„ Û±Û° Ú©Ø§Ø±Ø§Ú©ØªØ±)" value={description} onChange={e => { setDescription(e.target.value); if(descError) setDescError('') }} onBlur={e => validateDesc(e.target.value)} rows={4} className={`w-full px-4 py-3 rounded-xl border ${descError ? 'border-red-500' : ''}`} />
+            {descError && <p className="text-red-500 text-xs">{descError}</p>}
+            <input type="text" inputMode="numeric" placeholder="Ù‚ÛŒÙ…Øª (ØªÙˆÙ…Ø§Ù†) - ÙÙ‚Ø· Ø¹Ø¯Ø¯" value={price} onChange={handlePriceChange} onBlur={e => validatePrice(e.target.value)} className={`w-full px-4 py-3 rounded-xl border ${priceError ? 'border-red-500' : ''}`} />
+            {priceError && <p className="text-red-500 text-xs">{priceError}</p>}
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={enableChat} onChange={e => setEnableChat(e.target.checked)} className="w-4 h-4 accent-purple-600" />
+              <span className="text-sm">ÙØ¹Ø§Ù„â€ŒØ³Ø§Ø²ÛŒ Ú†Øª</span>
+            </label>
+
+            {fields.length > 0 && (
+              <div className="my-4 p-4 bg-gray-50 rounded-xl">
+                <h4 className="text-sm font-semibold mb-3">Ù…Ø´Ø®ØµØ§Øª {selectedCategory?.name}</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  {fields.map(f => (
+                    <div key={f.id}>
+                      <label className="text-xs block mb-1">{f.name} {f.isRequired && <span className="text-red-500">*</span>}</label>
+                      {f.type === 2 ? <input type="number" value={fieldValues[f.id] || ''} onChange={e => setFieldValues(prev => ({...prev, [f.id]: e.target.value}))} className="w-full px-3 py-2 rounded-lg border text-sm" />
+                      : (f.type === 3 || f.type === 4 || f.type === 5) ? (
+                        <select value={fieldValues[f.id] || ''} onChange={e => setFieldValues(prev => ({...prev, [f.id]: e.target.value}))} className="w-full px-3 py-2 rounded-lg border text-sm">
+                          <option value="">Ø§Ù†ØªØ®Ø§Ø¨ Ú©Ù†ÛŒØ¯</option>
+                          {(f.options || []).map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                        </select>
+                      ) : <input type="text" value={fieldValues[f.id] || ''} onChange={e => setFieldValues(prev => ({...prev, [f.id]: e.target.value}))} className="w-full px-3 py-2 rounded-lg border text-sm" />
+                      }
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedCategory?.isPaid && (
+              <div className="mb-4 p-3 bg-purple-50 rounded-lg text-sm">
+                <span className="font-semibold">ØªØ¹Ø±ÙÙ‡: </span>
+                {tarefes.length > 0 ? (
+                  <span>{tarefes[0].name} â€“ {tarefes[0].price.toLocaleString('fa-IR')} ØªÙˆÙ…Ø§Ù†</span>
+                ) : (
+                  <span>Ù‡ÛŒÚ† ØªØ¹Ø±ÙÙ‡â€ŒØ§ÛŒ ØªØ¹Ø±ÛŒÙ Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª.</span>
+                )}
+              </div>
+            )}
+
+            <button onClick={() => setStep(4)} disabled={!isFormValid()} className="w-full py-3 rounded-xl bg-purple-600 text-white disabled:opacity-50">Ø§Ø¯Ø§Ù…Ù‡</button>
+          </div>
+        </div>
+      )
+      case 4: return (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold">ØªØµØ§ÙˆÛŒØ± (Ø­Ø¯Ø§Ú©Ø«Ø± Û±Û°)</h3>
+            <button onClick={() => setStep(3)} className="text-sm text-purple-600">â† Ø¨Ø§Ø²Ú¯Ø´Øª</button>
+          </div>
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            {images.map((img, idx) => (
+              <div key={idx} onClick={() => handleImageClick(idx)} className={`relative rounded-xl overflow-hidden border-2 cursor-pointer ${img.isMain ? 'border-amber-400' : ''}`}>
+                <img src={img.url} className="w-full h-24 object-cover" />
+                <button onClick={e => removeImage(e, idx)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 text-xs">Ã—</button>
+                {img.isMain && <div className="absolute bottom-0 w-full bg-amber-400 text-black text-[10px] text-center">ØªØµÙˆÛŒØ± Ø§ØµÙ„ÛŒ</div>}
+              </div>
+            ))}
+          </div>
+          <input type="file" accept="image/*" multiple onChange={handleFileSelect} ref={fileInputRef} className="hidden" />
+          <button onClick={() => fileInputRef.current?.click()} disabled={images.length >= 10 || uploading} className="w-full py-3 rounded-xl border-2 border-dashed text-gray-500">Ø§ÙØ²ÙˆØ¯Ù† ØªØµÙˆÛŒØ± ({images.length}/10)</button>
+          <button onClick={() => setStep(5)} className="w-full mt-4 py-3 rounded-xl bg-purple-600 text-white">Ø§Ø¯Ø§Ù…Ù‡</button>
+        </div>
+      )
+      case 5: return (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold">ØªØ£ÛŒÛŒØ¯ Ù†Ù‡Ø§ÛŒÛŒ</h3>
+            <button onClick={() => setStep(4)} className="text-sm text-purple-600">â† ÙˆÛŒØ±Ø§ÛŒØ´</button>
+          </div>
+          <div className="bg-gray-50 p-4 rounded-xl space-y-2">
+            <p><strong>Ø¯Ø³ØªÙ‡:</strong> {selectedCategory?.name}</p>
+            <p><strong>Ø´Ù‡Ø±:</strong> {selectedCity?.name}</p>
+            <p><strong>Ø¹Ù†ÙˆØ§Ù†:</strong> {title}</p>
+            <p><strong>ØªÙˆØ¶ÛŒØ­Ø§Øª:</strong> {description}</p>
+            <p><strong>Ù‚ÛŒÙ…Øª:</strong> {Number(toEnglishDigits(price)).toLocaleString('fa-IR')} ØªÙˆÙ…Ø§Ù†</p>
+            <p><strong>ØªØµØ§ÙˆÛŒØ±:</strong> {images.length} Ø¹Ø¯Ø¯</p>
+            <p><strong>Ú†Øª:</strong> {enableChat ? 'ÙØ¹Ø§Ù„' : 'ØºÛŒØ±ÙØ¹Ø§Ù„'}</p>
+            {selectedTarefeId && <p><strong>ØªØ¹Ø±ÙÙ‡:</strong> {tarefes.find(t => t.id === selectedTarefeId)?.name}</p>}
+            {fields.length > 0 && (
+              <div>
+                <p className="font-semibold mb-1">Ù…Ø´Ø®ØµØ§Øª:</p>
+                {fields.map(f => <p key={f.id} className="text-sm text-gray-600">{f.name}: {fieldValues[f.id] || '---'}</p>)}
+              </div>
+            )}
+            {images.filter(i => i.isMain).length > 0 && (
+              <div className="flex items-center gap-2"><strong>ØªØµÙˆÛŒØ± Ø§ØµÙ„ÛŒ:</strong> <img src={images.find(i => i.isMain)?.url} className="w-16 h-16 object-cover rounded-lg" /></div>
+            )}
+          </div>
+
+          {/* ===== Ø±ÙˆØ´ Ù¾Ø±Ø¯Ø§Ø®Øª ===== */}
+          {selectedCategory?.isPaid && (
+            <div className="mt-4 p-4 bg-purple-50 dark:bg-purple-900/20 rounded-xl space-y-3">
+              <p className="font-semibold text-gray-800 dark:text-white">Ø±ÙˆØ´ Ù¾Ø±Ø¯Ø§Ø®Øª</p>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="radio" checked={useWallet} onChange={() => setUseWallet(true)} className="w-4 h-4 accent-purple-600" />
+                <span className="text-sm text-gray-700 dark:text-gray-200">
+                  Ù¾Ø±Ø¯Ø§Ø®Øª Ø§Ø² Ú©ÛŒÙ Ù¾ÙˆÙ„ ({Number(walletBalance).toLocaleString('fa-IR')} ØªÙˆÙ…Ø§Ù†)
+                </span>
+              </label>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input type="radio" checked={!useWallet} onChange={() => setUseWallet(false)} className="w-4 h-4 accent-purple-600" />
+                <span className="text-sm text-gray-700 dark:text-gray-200">Ù¾Ø±Ø¯Ø§Ø®Øª Ø¢Ù†Ù„Ø§ÛŒÙ†</span>
+              </label>
+              {useWallet && walletBalance < (tarefes[0]?.price || 0) && (
+                <p className="text-xs text-red-500">Ù…ÙˆØ¬ÙˆØ¯ÛŒ Ú©ÛŒÙ Ù¾ÙˆÙ„ Ú©Ø§ÙÛŒ Ù†ÛŒØ³Øª.</p>
+              )}
+            </div>
+          )}
+
+          {error && <p className="text-red-500 mt-3">{error}</p>}
+          <button onClick={handleSubmit} disabled={loading} className="w-full mt-6 py-3 rounded-xl bg-purple-600 text-white disabled:opacity-50">
+            {loading ? 'Ø¯Ø± Ø­Ø§Ù„ Ø«Ø¨Øª...' : 'Ø«Ø¨Øª Ø¢Ú¯Ù‡ÛŒ'}
+          </button>
+        </div>
+      )
+      default: return null
+    }
+  }
+
+  return (
+    <div className="min-h-[calc(100vh-80px)] p-4 md:p-6 flex items-center justify-center">
+      <div className="w-full max-w-lg">
+        <div className="bg-white/60 dark:bg-white/5 backdrop-blur-md rounded-2xl p-6 border shadow-lg">
+          <div className="flex items-center justify-between mb-6">
+            {['Ø¯Ø³ØªÙ‡', 'Ø´Ù‡Ø±', 'Ø¢Ú¯Ù‡ÛŒ', 'ØªØµØ§ÙˆÛŒØ±', 'ØªØ£ÛŒÛŒØ¯'].map((s, i) => (
+              <div key={i} className={`flex items-center gap-2 text-sm ${step === i+1 ? 'text-purple-600 font-bold' : 'text-gray-400'}`}>
+                <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${step === i+1 ? 'bg-purple-600 text-white' : 'bg-gray-200'}`}>{i+1}</span>
+                {s}
+              </div>
+            ))}
+          </div>
+          {renderStep()}
+          {step > 1 && step < 5 && (
+            <div className="flex justify-between mt-6">
+              <button onClick={prevStep} className="px-6 py-2 rounded-lg border">â† Ù…Ø±Ø­Ù„Ù‡ Ù‚Ø¨Ù„</button>
+              {step === 3 ? <button onClick={nextStep} disabled={!isFormValid()} className="px-6 py-2 rounded-lg bg-purple-600 text-white disabled:opacity-50">Ù…Ø±Ø­Ù„Ù‡ Ø¨Ø¹Ø¯</button>
+              : <button onClick={nextStep} className="px-6 py-2 rounded-lg bg-purple-600 text-white">Ù…Ø±Ø­Ù„Ù‡ Ø¨Ø¹Ø¯</button>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default CreateAd
+======================================================
+FILE: rooznabeh-frontend\src\pages\AdDetail.jsx
+======================================================
+import { useState, useEffect } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { jwtDecode } from 'jwt-decode'
+import { Helmet } from 'react-helmet-async'
+
+const statusTextMap = {
+  'PendingReview': 'Ø¯Ø± Ø§Ù†ØªØ¸Ø§Ø± ØªØ£ÛŒÛŒØ¯',
+  'PendingPayment': 'Ø¯Ø± Ø§Ù†ØªØ¸Ø§Ø± Ù¾Ø±Ø¯Ø§Ø®Øª',
+  'Active': 'Ù…Ù†ØªØ´Ø± Ø´Ø¯Ù‡',
+  'Rejected': 'Ø±Ø¯ Ø´Ø¯Ù‡',
+  'Expired': 'Ù…Ù†Ù‚Ø¶ÛŒ Ø´Ø¯Ù‡'
+}
+
+const parseDate = (dateStr) => {
+  if (!dateStr) return new Date()
+  if (dateStr.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(dateStr)) {
+    return new Date(dateStr)
+  }
+  return new Date(dateStr + 'Z')
+}
+
+function AdDetail() {
+  const { slug } = useParams() // Ø§Ø² Ø§Ø³Ù… slug Ø§Ø³ØªÙØ§Ø¯Ù‡ Ù…ÛŒÚ©Ù†ÛŒÙ…
+  const navigate = useNavigate()
+  const [ad, setAd] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [currentImageIndex, setCurrentImageIndex] = useState(0)
+  const [marked, setMarked] = useState(false)
+  const [markId, setMarkId] = useState(null)
+  const [showReportModal, setShowReportModal] = useState(false)
+  const [reportReason, setReportReason] = useState('')
+  const [reportDesc, setReportDesc] = useState('')
+  const [showPhone, setShowPhone] = useState(false)
+
+  const token = localStorage.getItem('token')
+  let userId = null
+  try {
+    if (token) {
+      const decoded = jwtDecode(token)
+      userId = decoded.nameid || decoded.sub || decoded['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier']
+    }
+  } catch (e) {
+    console.error('Invalid token', e)
+  }
+
+  useEffect(() => {
+    // âœ… ØªØ´Ø®ÛŒØµ Ø®ÙˆØ¯Ú©Ø§Ø±: Ø¢ÛŒØ§ Ù¾Ø§Ø±Ø§Ù…ØªØ± ÛŒÚ© GUID Ø§Ø³Øª ÛŒØ§ SlugØŸ
+    const isGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slug);
+    
+    const url = isGuid 
+      ? `http://localhost:5097/ads/${slug}${userId ? `?userId=${userId}` : ''}`
+      : `http://localhost:5097/ads/slug/${slug}${userId ? `?userId=${userId}` : ''}`;
+
+    fetch(url)
+      .then(res => {
+          if (!res.ok) throw new Error("Not found")
+          return res.json()
+      })
+      .then(data => {
+        const adData = data.adDetail || data
+        if (adData) {
+          setAd(adData)
+          setMarked(adData.isMarkedByCurrentUser || false)
+          
+          fetch(`http://localhost:5097/ads/${adData.id}/visit`, {
+            method: 'POST',
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          }).catch(err => console.error(err));
+
+          if (adData.isMarkedByCurrentUser && userId && token) {
+            fetch(`http://localhost:5097/users/${userId}/marks`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            })
+              .then(res => res.json())
+              .then(marks => {
+                const mark = marks.find(m => m.adId === adData.id)
+                if (mark) setMarkId(mark.markId)
+              })
+          }
+        }
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [slug, userId, token])
+
+  const getRelativeTime = (dateStr) => {
+    if (!dateStr) return ''
+    const now = new Date()
+    const past = parseDate(dateStr)
+    const diffMs = now - past
+    const diffMins = Math.floor(diffMs / 60000)
+    if (diffMins < 1) return 'Ù„Ø­Ø¸Ø§ØªÛŒ Ù¾ÛŒØ´'
+    if (diffMins < 60) return `${diffMins} Ø¯Ù‚ÛŒÙ‚Ù‡ Ù¾ÛŒØ´`
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return `${diffHours} Ø³Ø§Ø¹Øª Ù¾ÛŒØ´`
+    const diffDays = Math.floor(diffHours / 24)
+    return `${diffDays} Ø±ÙˆØ² Ù¾ÛŒØ´`
+  }
+
+  const toggleMark = async () => {
+    if (!token || !userId) return alert('Ù„Ø·ÙØ§Ù‹ ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯')
+    if (marked && markId) {
+      await fetch(`http://localhost:5097/marks/${markId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      setMarked(false)
+      setMarkId(null)
+    } else {
+      const res = await fetch(`http://localhost:5097/ads/${ad.id}/mark`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ adId: ad.id, userId: userId })
+      })
+      if (res.ok) {
+        setMarked(true)
+        const marksRes = await fetch(`http://localhost:5097/users/${userId}/marks`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        const marks = await marksRes.json()
+        const newMark = marks.find(m => m.adId === ad.id)
+        if (newMark) setMarkId(newMark.markId)
+      }
+    }
+  }
+
+  const handleShare = () => {
+    const url = window.location.href
+    if (navigator.share) {
+      navigator.share({ title: ad.title, url })
+    } else {
+      navigator.clipboard.writeText(url).then(() => alert('Ù„ÛŒÙ†Ú© Ø¢Ú¯Ù‡ÛŒ Ú©Ù¾ÛŒ Ø´Ø¯'))
+    }
+  }
+
+  const handleShowPhone = async () => {
+    if (!ad.ownerMobile) {
+      try {
+        const res = await fetch(`http://localhost:5097/ads/${ad.id}?userId=${userId}`)
+        const data = await res.json()
+        const phone = data.ownerMobile || data.phone || ''
+        if (phone) {
+          setAd(prev => ({ ...prev, ownerMobile: phone }))
+        }
+      } catch {}
+    }
+    setShowPhone(!showPhone)
+  }
+
+  const submitReport = async () => {
+    if (!token || !userId) return alert('Ù„Ø·ÙØ§Ù‹ ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯')
+    if (!reportReason.trim()) return alert('Ù„Ø·ÙØ§Ù‹ Ø¯Ù„ÛŒÙ„ Ú¯Ø²Ø§Ø±Ø´ Ø±Ø§ Ø¨Ù†ÙˆÛŒØ³ÛŒØ¯')
+    await fetch(`http://localhost:5097/ads/${ad.id}/report`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        adId: ad.id,
+        reporterUserId: userId,
+        reason: reportReason,
+        description: reportDesc
+      })
+    })
+    setShowReportModal(false)
+    alert('Ú¯Ø²Ø§Ø±Ø´ Ø´Ù…Ø§ Ø«Ø¨Øª Ø´Ø¯.')
+  }
+
+  const startChat = async () => {
+    if (!token || !userId) {
+      alert('Ù„Ø·ÙØ§Ù‹ ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯')
+      navigate('/login')
+      return
+    }
+    try {
+      const res = await fetch('http://localhost:5097/conversations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          adId: ad.id,
+          otherUserId: ad.userId
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        navigate('/chat', { state: { initialConversationId: data.conversationId } })
+      } else {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || 'Ø®Ø·Ø§ Ø¯Ø± Ø´Ø±ÙˆØ¹ Ù…Ú©Ø§Ù„Ù…Ù‡')
+      }
+    } catch (error) {
+      alert('Ø®Ø·Ø§ Ø¯Ø± Ø¨Ø±Ù‚Ø±Ø§Ø±ÛŒ Ø§Ø±ØªØ¨Ø§Ø·')
+    }
+  }
+
+  if (loading) return <div className="text-center py-20 text-gray-500">Ø¯Ø± Ø­Ø§Ù„ Ø¨Ø§Ø±Ú¯Ø°Ø§Ø±ÛŒ...</div>
+  if (!ad) return <div className="text-center py-20 text-gray-500">Ø¢Ú¯Ù‡ÛŒ Ù¾ÛŒØ¯Ø§ Ù†Ø´Ø¯.</div>
+
+  const locationText = ad.status === 'Active'
+    ? `${getRelativeTime(ad.createdAt)} Ø¯Ø± ${ad.cityName}`
+    : (statusTextMap[ad.status] || ad.status)
+
+  const images = ad.images || []
+  const hasImages = images.length > 0
+
+  const goToPreviousImage = () => setCurrentImageIndex(prev => (prev === 0 ? images.length - 1 : prev - 1))
+  const goToNextImage = () => setCurrentImageIndex(prev => (prev === images.length - 1 ? 0 : prev + 1))
+
+  return (
+    <>
+      <Helmet>
+        <title>{`${ad.title} | Ø±ÙˆØ²Ù†Ø§Ø¨Ù‡`}</title>
+        <meta name="description" content={ad.description?.substring(0, 160) || 'Ø¢Ú¯Ù‡ÛŒ Ø¬Ø¯ÛŒØ¯ Ø¯Ø± Ø±ÙˆØ²Ù†Ø§Ø¨Ù‡'} />
+        <link rel="canonical" href={`https://rooznabeh.ir/ads/${ad.slug || ad.id}`} />
+        
+        <meta property="og:title" content={`${ad.title} | Ø±ÙˆØ²Ù†Ø§Ø¨Ù‡`} />
+        <meta property="og:description" content={ad.description?.substring(0, 160)} />
+        <meta property="og:type" content="product" />
+        <meta property="og:url" content={`https://rooznabeh.ir/ads/${ad.slug || ad.id}`} />
+        {images.length > 0 && <meta property="og:image" content={images[0]} />}
+        
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={ad.title} />
+        <meta name="twitter:description" content={ad.description?.substring(0, 160)} />
+        {images.length > 0 && <meta name="twitter:image" content={images[0]} />}
+        
+        <script type="application/ld+json">
+          {`
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "${ad.title.replace(/"/g, '\\"')}",
+              "description": "${ad.description?.replace(/"/g, '\\"').replace(/\n/g, ' ')}",
+              "image": "${images[0] || ''}",
+              "offers": {
+                "@type": "Offer",
+                "priceCurrency": "IRR",
+                "price": "${ad.price}",
+                "availability": "https://schema.org/InStock"
+              }
+            }
+          `}
+        </script>
+      </Helmet>
+
+      <main className="max-w-6xl mx-auto p-4 md:p-6">
+        <button
+          onClick={() => navigate(-1)}
+          className="mb-4 px-4 py-2 text-sm rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-white/10 dark:hover:bg-white/20 transition"
+        >
+          â† Ø¨Ø§Ø²Ú¯Ø´Øª
+        </button>
+
+        <div className="mb-3">
+          <span className="inline-block px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
+            {ad.categoryName}
+          </span>
+        </div>
+
+        <div className="flex flex-col lg:flex-row gap-6 lg:gap-10">
+          
+          <div className="w-full lg:w-7/12 order-1 lg:order-2">
+            {hasImages ? (
+              <div className="relative rounded-2xl overflow-hidden bg-gray-100 dark:bg-white/5 border border-gray-200/70 dark:border-white/10">
+                <img
+                  src={images[currentImageIndex]}
+                  alt={ad.title}
+                  className="w-full h-80 md:h-96 object-contain"
+                />
+                {images.length > 1 && (
+                  <>
+                    <button onClick={goToPreviousImage} className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/80 dark:bg-white/10 backdrop-blur-md rounded-full p-2 shadow hover:bg-white dark:hover:bg-white/20 transition">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-gray-700 dark:text-white">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+                      </svg>
+                    </button>
+                    <button onClick={goToNextImage} className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/80 dark:bg-white/10 backdrop-blur-md rounded-full p-2 shadow hover:bg-white dark:hover:bg-white/20 transition">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-gray-700 dark:text-white">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                      </svg>
+                    </button>
+                  </>
+                )}
+                {images.length > 1 && (
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
+                    {images.map((_, idx) => (
+                      <div key={idx} className={`w-2 h-2 rounded-full ${idx === currentImageIndex ? 'bg-purple-600' : 'bg-white/60'}`} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="h-80 md:h-96 rounded-2xl bg-gradient-to-br from-purple-100 to-blue-100 dark:from-purple-900/20 dark:to-blue-900/20 flex items-center justify-center">
+                <span className="text-gray-500 text-lg">Ø¨Ø¯ÙˆÙ† ØªØµÙˆÛŒØ±</span>
+              </div>
+            )}
+          </div>
+
+          <div className="w-full lg:w-5/12 order-2 lg:order-1">
+            
+            <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-1">{ad.title}</h1>
+            
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+              {locationText}
+            </p>
+
+            <p className="text-lg font-bold text-purple-600 dark:text-purple-400 mb-4">
+              {ad.price?.toLocaleString('fa-IR')} ØªÙˆÙ…Ø§Ù†
+            </p>
+
+            <div className="flex gap-3 mb-4">
+              <button onClick={handleShowPhone} className="flex-1 py-3 rounded-xl bg-purple-600 text-white font-semibold hover:bg-purple-700 transition shadow-lg shadow-purple-600/20">
+                {showPhone && ad.ownerMobile ? `ðŸ“ž ${ad.ownerMobile}` : 'Ù†Ù…Ø§ÛŒØ´ Ø´Ù…Ø§Ø±Ù‡ ØªÙ…Ø§Ø³'}
+              </button>
+              {userId !== ad.userId && ad.isChatEnabled !== false && (
+                <button onClick={startChat} className="flex-1 py-3 rounded-xl border border-purple-300 text-purple-600 font-semibold hover:bg-purple-50 dark:hover:bg-purple-600/20 transition">
+                  Ú†Øª Ø¨Ø§ Ø¢Ú¯Ù‡ÛŒâ€ŒØ¯Ù‡Ù†Ø¯Ù‡
+                </button>
+              )}
+            </div>
+
+            {showPhone && ad.ownerMobile && (
+              <div className="text-center mb-4 text-sm text-gray-600 dark:text-gray-300">
+                Ø´Ù…Ø§Ø±Ù‡ ØªÙ…Ø§Ø³: <span className="font-bold">{ad.ownerMobile}</span>
+              </div>
+            )}
+
+            <div className="flex gap-3 mb-6">
+              <button onClick={toggleMark} className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition border ${
+                marked
+                  ? 'bg-purple-100 border-purple-300 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+                  : 'bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/10'
+              }`}>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill={marked ? "currentColor" : "none"} stroke="currentColor" strokeWidth={1.5} className="w-4 h-4 inline-block ml-1">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+                </svg>
+                {marked ? 'Ø°Ø®ÛŒØ±Ù‡ Ø´Ø¯Ù‡' : 'Ø°Ø®ÛŒØ±Ù‡'}
+              </button>
+              <button onClick={handleShare} className="flex-1 py-2 px-3 rounded-lg text-sm font-medium bg-white dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/10 transition">
+                â†— Ø§Ø´ØªØ±Ø§Ú©â€ŒÚ¯Ø°Ø§Ø±ÛŒ
+              </button>
+              <button onClick={() => setShowReportModal(true)} className="flex-1 py-2 px-3 rounded-lg text-sm font-medium bg-white dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/10 transition">
+                âš  Ú¯Ø²Ø§Ø±Ø´
+              </button>
+            </div>
+
+            <p className="text-gray-600 dark:text-gray-300 leading-relaxed mb-6 whitespace-pre-line">
+              {ad.description}
+            </p>
+
+            {ad.advertFields && ad.advertFields.length > 0 && (
+              <div className="mb-6">
+                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Ù…Ø´Ø®ØµØ§Øª</h3>
+                <div className="grid grid-cols-2 gap-2">
+                  {ad.advertFields.map(field => (
+                    <div key={field.fieldId} className="flex flex-col bg-gray-50 dark:bg-white/5 rounded-lg p-3">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">{field.fieldName}</span>
+                      <span className="text-sm font-medium text-gray-800 dark:text-white">{field.fieldValue}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-4 text-sm text-gray-500 dark:text-gray-400 mt-6 pt-4 border-t border-gray-200 dark:border-white/10">
+              <span>ðŸ‘ {ad.viewCount} Ø¨Ø§Ø²Ø¯ÛŒØ¯</span>
+              <span>ðŸ“… Ø§Ù†ØªØ´Ø§Ø±: {parseDate(ad.createdAt).toLocaleDateString('fa-IR')}</span>
+            </div>
+          </div>
+        </div>
+
+        {showReportModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md mx-4 shadow-xl">
+              <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-4">Ú¯Ø²Ø§Ø±Ø´ Ø§ÛŒÙ† Ø¢Ú¯Ù‡ÛŒ</h3>
+              <input type="text" placeholder="Ø¯Ù„ÛŒÙ„ Ú¯Ø²Ø§Ø±Ø´ (Ø§Ø¬Ø¨Ø§Ø±ÛŒ)" value={reportReason} onChange={e => setReportReason(e.target.value)}
+                className="w-full mb-3 px-4 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 text-gray-700 dark:text-gray-200" />
+              <textarea placeholder="ØªÙˆØ¶ÛŒØ­Ø§Øª (Ø§Ø®ØªÛŒØ§Ø±ÛŒ)" value={reportDesc} onChange={e => setReportDesc(e.target.value)}
+                className="w-full mb-4 px-4 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 text-gray-700 dark:text-gray-200" rows={3} />
+              <div className="flex gap-3 justify-end">
+                <button onClick={() => setShowReportModal(false)} className="px-4 py-2 rounded-lg text-sm bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300">Ø§Ù†ØµØ±Ø§Ù</button>
+                <button onClick={submitReport} className="px-4 py-2 rounded-lg text-sm bg-purple-600 text-white font-semibold">Ø§Ø±Ø³Ø§Ù„ Ú¯Ø²Ø§Ø±Ø´</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </>
+  )
+}
+
+export default AdDetail
+======================================================
+FILE: rooznabeh-frontend\src\components\CitySelector.jsx
+======================================================
+import { useState, useEffect } from 'react'
+
+function CitySelector({ open, onClose, onSelect }) {
+  const [cities, setCities] = useState([])
+  const [searchTerm, setSearchTerm] = useState('')
+  const [selected, setSelected] = useState(() => {
+    const saved = localStorage.getItem('selectedCity')
+    return saved ? JSON.parse(saved) : null
+  })
+
+  useEffect(() => {
+    fetch('http://localhost:5097/cities')
+      .then(res => res.json())
+      .then(data => setCities(data))
+  }, [])
+
+  const filteredCities = cities.filter(c => c.name.includes(searchTerm))
+
+  const handleSelect = (city) => {
+    setSelected(city)
+  }
+
+  const handleConfirm = () => {
+    if (selected) {
+      localStorage.setItem('selectedCity', JSON.stringify(selected))
+      onSelect(selected)  // ÙÙ‚Ø· ÛŒÚ© Ø´Ù‡Ø±
+    } else {
+      localStorage.removeItem('selectedCity')
+      onSelect(null)
+    }
+    onClose()
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-lg mx-4 shadow-xl max-h-[80vh] flex flex-col">
+        <h3 className="text-lg font-bold text-gray-800 dark:text-white mb-4">Ø§Ù†ØªØ®Ø§Ø¨ Ø´Ù‡Ø±</h3>
+        <input
+          type="text"
+          placeholder="Ø¬Ø³ØªØ¬ÙˆÛŒ Ø´Ù‡Ø±..."
+          value={searchTerm}
+          onChange={e => setSearchTerm(e.target.value)}
+          className="w-full mb-4 px-4 py-2 rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 text-gray-700 dark:text-gray-200"
+        />
+        <div className="flex-1 overflow-y-auto mb-4 grid grid-cols-2 gap-2">
+          {filteredCities.map(city => (
+            <button
+              key={city.id}
+              onClick={() => handleSelect(city)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition border ${
+                selected && selected.id === city.id
+                  ? 'bg-purple-100 border-purple-300 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+                  : 'bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10'
+              }`}
+            >
+              {city.name}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-3">
+          <button onClick={handleConfirm} className="flex-1 py-2 rounded-lg bg-purple-600 text-white font-semibold hover:bg-purple-700 transition">ØªØ£ÛŒÛŒØ¯</button>
+          <button onClick={onClose} className="flex-1 py-2 rounded-lg bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20 transition">Ø§Ù†ØµØ±Ø§Ù</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default CitySelector
